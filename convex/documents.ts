@@ -45,6 +45,7 @@ export const archive = mutation({
     return document;
   },
 });
+
 export const getSidebar = query({
   args: {
     parentDocument: v.optional(v.id("documents")),
@@ -84,7 +85,7 @@ export const create = mutation({
       userId,
       isArchived: false,
       isPublished: false,
-      content: "", // Initialize content field with empty string
+      content: "",
     });
     return document;
   },
@@ -128,15 +129,15 @@ export const restore = mutation({
     const recursiveRestore = async (documentId: Id<"documents">) => {
       const children = await ctx.db
         .query("documents")
-        .withIndex("by_user_parent", (q) =>(
+        .withIndex("by_user_parent", (q) => (
           q.eq("userId", userId).eq("parentDocument", documentId))
         ).collect();
-        for(const child of children) {
-            await ctx.db.patch(child._id, {
-                isArchived: false,
-            });
-            await recursiveRestore(child._id);
-        }
+      for (const child of children) {
+        await ctx.db.patch(child._id, {
+          isArchived: false,
+        });
+        await recursiveRestore(child._id);
+      }
     };
     const options: Partial<Doc<"documents">> = {
       isArchived: false,
@@ -154,11 +155,11 @@ export const restore = mutation({
 });
 
 export const remove = mutation({
-    args: {
-        id: v.id("documents"),
-    },
-    handler: async (ctx, args) => {
-        const identity = await ctx.auth.getUserIdentity();
+  args: {
+    id: v.id("documents"),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new Error("You must be logged in");
     }
@@ -167,47 +168,48 @@ export const remove = mutation({
     if (!exisitingDocument) {
       throw new Error("Not found");
     }
-    if (exisitingDocument.userId!== userId) {
+    if (exisitingDocument.userId !== userId) {
       throw new Error("Unauthorized");
     }
     const document = await ctx.db.delete(args.id);
     return document;
-    }
+  }
 })
 
 export const getSearch = query({
-  handler:async (ctx)=>{
+  handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new Error("You must be logged in");
     }
     const userId = identity.subject;
     const documents = await ctx.db
-     .query("documents")
-     .withIndex("by_user", (q) => q.eq("userId", userId))
-     .filter((q) => q.eq(q.field("isArchived"), false))
-     .order("desc")
-     .collect();
+      .query("documents")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .filter((q) => q.eq(q.field("isArchived"), false))
+      .order("desc")
+      .collect();
     return documents;
-  }
+  },
 });
 
 export const getById = query({
-  args:{documentId: v.id("documents")},
-  handler:async (ctx, args) => {
+  args: { documentId: v.id("documents") },
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     const document = await ctx.db.get(args.documentId);
-    if(!document) {
+    if (!document) {
       throw new Error("Not found");
     }
-    if(document.isPublished && !document.isArchived) {
+    if (document.isPublished && !document.isArchived) {
       return document;
     }
-    if(!identity) {
+    if (!identity) {
       throw new Error("You must be logged in");
     }
-    const userId = identity.subject;  
-    if(document.userId!==userId) {
+    const userId = identity.subject;
+    const userEmail = identity.email;
+    if (document.userId !== userId && (!userEmail || !document.collaborators?.includes(userEmail))) {
       throw new Error("Unauthorized");
     }
     return document;
@@ -215,7 +217,7 @@ export const getById = query({
 });
 
 export const update = mutation({
-  args:{
+  args: {
     id: v.id("documents"),
     title: v.optional(v.string()),
     content: v.optional(v.string()),
@@ -223,95 +225,41 @@ export const update = mutation({
     icon: v.optional(v.string()),
     isPublished: v.optional(v.boolean()),
   },
-  handler: async(ctx, args) => {
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
-    if(!identity) {
+    if (!identity) {
       throw new Error("You must be logged in");
     }
     const userId = identity.subject;
-    
-    // Get existing document
+    const userEmail = identity.email;
+    const { id, ...rest } = args;
     const existingDocument = await ctx.db.get(args.id);
-    if(!existingDocument) {
+    if (!existingDocument) {
       throw new Error("Not found");
     }
-    if(existingDocument.userId !== userId) {
-      throw new Error("Unauthorized");
-    }
-    
-    // Create update object
-    const updates: any = {};
-    
-    // Only include fields that are provided
-    if (args.title !== undefined) updates.title = args.title;
-    
-    // Validate content is valid JSON before saving
-    if (args.content !== undefined) {
-      try {
-        // Check if it can be parsed as JSON (validation step)
-        JSON.parse(args.content);
-        
-        // Log content update
-        console.log(`Updating document ${args.id} with content (length: ${args.content.length})`);
-        
-        updates.content = args.content;
-      } catch (e) {
-        console.error("Invalid JSON content:", e);
-        throw new Error("Content must be valid JSON");
-      }
-    }
-    
-    if (args.coverImage !== undefined) updates.coverImage = args.coverImage;
-    if (args.icon !== undefined) updates.icon = args.icon;
-    if (args.isPublished !== undefined) updates.isPublished = args.isPublished;
-    
-    // Only perform update if there are fields to update
-    if (Object.keys(updates).length === 0) {
-      return existingDocument;
-    }
-    
-    // Apply the updates
-    const document = await ctx.db.patch(args.id, updates);
-    
-    return document;
-  },
-})
-
-export const removeIcon = mutation({
-  args:{id:v.id("documents")},
-  handler:async(ctx, args)=> {
-    const identity = await ctx.auth.getUserIdentity();
-    if(!identity) {
-      throw new Error("You must be logged in");
-    }
-    const userId = identity.subject;
-    const exisitingDocument = await ctx.db.get(args.id);
-    if(!exisitingDocument) {
-      throw new Error("Not found");
-    }
-    if(exisitingDocument.userId!==userId) {
+    if (existingDocument.userId !== userId && (!userEmail || !existingDocument.collaborators?.includes(userEmail))) {
       throw new Error("Unauthorized");
     }
     const document = await ctx.db.patch(args.id, {
-      icon: undefined,
+      ...rest,
     });
     return document;
-  }
-})
+  },
+});
 
 export const removeCoverImage = mutation({
-  args:{id:v.id("documents")},
-  handler:async(ctx, args)=> {
+  args: { id: v.id("documents") },
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
-    if(!identity) {
+    if (!identity) {
       throw new Error("You must be logged in");
     }
     const userId = identity.subject;
     const exisitingDocument = await ctx.db.get(args.id);
-    if(!exisitingDocument) {
+    if (!exisitingDocument) {
       throw new Error("Not found");
     }
-    if(exisitingDocument.userId!==userId) {
+    if (exisitingDocument.userId !== userId) {
       throw new Error("Unauthorized");
     }
     const document = await ctx.db.patch(args.id, {
@@ -319,4 +267,106 @@ export const removeCoverImage = mutation({
     });
     return document;
   }
-})
+});
+
+export const removeIcon = mutation({
+  args: { id: v.id("documents") },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("You must be logged in");
+    }
+    const userId = identity.subject;
+    const existingDocument = await ctx.db.get(args.id);
+    if (!existingDocument) {
+      throw new Error("Not found");
+    }
+    if (existingDocument.userId !== userId) {
+      throw new Error("Unauthorized");
+    }
+    const document = await ctx.db.patch(args.id, {
+      icon: undefined,
+    });
+    return document;
+  }
+});
+
+export const addCollaborator = mutation({
+  args: {
+    id: v.id("documents"),
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("You must be logged in");
+    }
+    const userId = identity.subject;
+    const document = await ctx.db.get(args.id);
+    if (!document) {
+      throw new Error("Not found");
+    }
+    if (document.userId !== userId) {
+      throw new Error("Unauthorized");
+    }
+
+    const collaborators = document.collaborators || [];
+    if (!collaborators.includes(args.email)) {
+      await ctx.db.patch(args.id, {
+        collaborators: [...collaborators, args.email]
+      });
+    }
+    return document;
+  }
+});
+
+export const removeCollaborator = mutation({
+  args: {
+    id: v.id("documents"),
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("You must be logged in");
+    }
+    const userId = identity.subject;
+    const document = await ctx.db.get(args.id);
+    if (!document) {
+      throw new Error("Not found");
+    }
+    if (document.userId !== userId) {
+      throw new Error("Unauthorized");
+    }
+
+    const collaborators = document.collaborators || [];
+    const newCollaborators = collaborators.filter(email => email !== args.email);
+
+    await ctx.db.patch(args.id, {
+      collaborators: newCollaborators
+    });
+
+    return document;
+  }
+});
+
+export const getShared = query({
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("You must be logged in");
+    }
+    const userId = identity.subject;
+    const userEmail = identity.email;
+    const documents = await ctx.db
+      .query("documents")
+      .filter((q) => q.eq(q.field("isArchived"), false))
+      .collect();
+
+    const sharedDocuments = documents.filter((doc) =>
+      userEmail && doc.collaborators?.includes(userEmail) && doc.userId !== userId
+    );
+
+    return sharedDocuments;
+  }
+});
